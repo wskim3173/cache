@@ -1,0 +1,23 @@
+Cache Settings
+C1: 12
+B1: 5
+S1: 3
+C2: 15
+B2: 6
+S2: 5
+K: 2
+
+Cache Statistics
+Accesses: 501468
+L1 Accesses: 501468
+L2 Accesses: 53288
+Reads: 289766
+L1 Read misses: 14177
+L2 Read misses: 6712
+Writes: 211702
+L1 Write misses: 39111
+L2 Write misses: 13036
+Write backs: 19742
+Prefetched blocks: 7248
+Successful prefetches: 7160
+Average access time (AAT): 22.927774
