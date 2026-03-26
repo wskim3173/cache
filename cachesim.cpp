@@ -83,6 +83,29 @@ static bool find_invalid_block(const Cache& cache, uint64_t set_idx, uint64_t& w
     return false;
 }
 
+static uint64_t find_lru_block(const Cache& cache, uint64_t set_idx) {
+    const std::vector<Block>& blocks = cache.sets[set_idx].blocks;
+
+    uint64_t victim = 0;
+    for (uint64_t i = 1; i < blocks.size(); i++) {
+        if (blocks[i].last_used < blocks[victim].last_used) {
+            victim = i;
+        }
+    }
+    return victim;
+}
+
+static uint64_t select_fill_way(const Cache& cache, uint64_t set_idx, bool& needs_eviction) {
+    uint64_t way_idx = 0;
+    if (find_invalid_block(cache, set_idx, way_idx)) {
+        needs_eviction = false;
+        return way_idx;
+    }
+
+    needs_eviction = true;
+    return find_lru_block(cache, set_idx);
+}
+
 static void touch_block(Cache& cache, uint64_t set_idx, uint64_t way_idx) {
     global_time++;
     cache.sets[set_idx].blocks[way_idx].last_used = global_time;
@@ -100,8 +123,44 @@ static void fill_block(Cache& cache, uint64_t set_idx, uint64_t way_idx,
         global_time++;
         block.last_used = global_time;
     } else {
-        block.last_used = 0;  // prefetched block 같은 경우
+        block.last_used = 0;  // prefetched block
     }
+}
+
+static uint64_t get_block_base_addr(const Cache& cache, uint64_t set_idx, uint64_t tag) {
+    uint64_t index_bits = cache.C - cache.B - cache.S;
+    uint64_t block_addr = (tag << index_bits) | set_idx;
+    return block_addr << cache.B;
+}
+
+static void handle_l1_eviction(uint64_t set_idx, uint64_t way_idx, cache_stats_t* p_stats) {
+    Block& victim = L1.sets[set_idx].blocks[way_idx];
+
+    if (!victim.valid || !victim.dirty) {
+        return;
+    }
+
+    uint64_t victim_addr = get_block_base_addr(L1, set_idx, victim.tag);
+
+    uint64_t l2_set = get_set_index(victim_addr, L2);
+    uint64_t l2_tag = get_tag(victim_addr, L2);
+
+    uint64_t l2_way = 0;
+    if (find_block_in_set(L2, l2_set, l2_tag, l2_way)) {
+        L2.sets[l2_set].blocks[l2_way].dirty = true;
+    } else {
+        p_stats->write_backs++;
+    }
+}
+
+static void handle_l2_eviction(uint64_t set_idx, uint64_t way_idx, cache_stats_t* p_stats) {
+    Block& victim = L2.sets[set_idx].blocks[way_idx];
+
+    if (!victim.valid || !victim.dirty) {
+        return;
+    }
+
+    p_stats->write_backs++;
 }
 
 /**
@@ -156,6 +215,7 @@ void cache_access(char rw, uint64_t address, cache_stats_t* p_stats) {
         return;
     }
 
+    // L1 Miss
     if (rw == READ) {
         p_stats->L1_read_misses++;
     } else {
@@ -172,20 +232,44 @@ void cache_access(char rw, uint64_t address, cache_stats_t* p_stats) {
     if (find_block_in_set(L2, l2_set, l2_tag, l2_way)) { // L2 Hit
         touch_block(L2, l2_set, l2_way);
 
-        uint64_t empty_l1_way = 0;
-        if (find_invalid_block(L1, l1_set, empty_l1_way)) {
-            fill_block(L1, l1_set, empty_l1_way, l1_tag, (rw == WRITE), false, true);
-            return;
+        bool l1_need_evict = false;
+        uint64_t fill_l1_way = select_fill_way(L1, l1_set, l1_need_evict);
+
+        if (l1_need_evict) {
+            handle_l1_eviction(l1_set, fill_l1_way, p_stats);
         }
 
+        fill_block(L1, l1_set, fill_l1_way, l1_tag, (rw == WRITE), false, true);
         return;
     }
 
+    // L2 Miss
     if (rw == READ) {
         p_stats->L2_read_misses++;
     } else {
         p_stats->L2_write_misses++;
     }
+
+    // Memory access
+    // memory -> L2
+    bool l2_need_evict = false;
+    uint64_t fill_l2_way = select_fill_way(L2, l2_set, l2_need_evict);
+
+    if (l2_need_evict) {
+        handle_l2_eviction(l2_set, fill_l2_way, p_stats);
+    }
+
+    fill_block(L2, l2_set, fill_l2_way, l2_tag, false, false, true);
+
+    // L2 -> L1
+    bool l1_need_evict = false;
+    uint64_t fill_l1_way = select_fill_way(L1, l1_set, l1_need_evict);
+
+    if (l1_need_evict) {
+        handle_l1_eviction(l1_set, fill_l1_way, p_stats);
+    }
+
+    fill_block(L1, l1_set, fill_l1_way, l1_tag, (rw == WRITE), false, true);
 }
 
 /**
