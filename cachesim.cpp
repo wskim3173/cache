@@ -28,6 +28,10 @@ static Cache L2;
 static uint64_t global_time = 0;
 static uint32_t prefetch_k = 0;
 
+static bool has_last_miss_block = false;
+static uint64_t last_miss_block_addr = 0;
+static int64_t pending_stride = 0;
+
 static void init_cache(Cache& cache, uint64_t C, uint64_t B, uint64_t S) {
     cache.C = C;
     cache.B = B;
@@ -57,6 +61,20 @@ static uint64_t get_set_index(uint64_t address, const Cache& cache) {
 static uint64_t get_tag(uint64_t address, const Cache& cache) {
     uint64_t index_bits = cache.C - cache.B - cache.S;
     return address >> (cache.B + index_bits);
+}
+
+static uint64_t get_block_addr(uint64_t address, const Cache& cache) {
+    return address >> cache.B;
+}
+
+static uint64_t get_block_base_addr(const Cache& cache, uint64_t set_idx, uint64_t tag) {
+    uint64_t index_bits = cache.C - cache.B - cache.S;
+    uint64_t block_addr = (tag << index_bits) | set_idx;
+    return block_addr << cache.B;
+}
+
+static bool block_addr_out_of_range(int64_t block_addr) {
+    return block_addr < 0;
 }
 
 static bool find_block_in_set(const Cache& cache, uint64_t set_idx, uint64_t tag, uint64_t& way_idx) {
@@ -127,12 +145,6 @@ static void fill_block(Cache& cache, uint64_t set_idx, uint64_t way_idx,
     }
 }
 
-static uint64_t get_block_base_addr(const Cache& cache, uint64_t set_idx, uint64_t tag) {
-    uint64_t index_bits = cache.C - cache.B - cache.S;
-    uint64_t block_addr = (tag << index_bits) | set_idx;
-    return block_addr << cache.B;
-}
-
 static void handle_l1_eviction(uint64_t set_idx, uint64_t way_idx, cache_stats_t* p_stats) {
     Block& victim = L1.sets[set_idx].blocks[way_idx];
 
@@ -163,6 +175,56 @@ static void handle_l2_eviction(uint64_t set_idx, uint64_t way_idx, cache_stats_t
     p_stats->write_backs++;
 }
 
+static void prefetch_block_to_L2(uint64_t address, cache_stats_t* p_stats) {
+    uint64_t l2_set = get_set_index(address, L2);
+    uint64_t l2_tag = get_tag(address, L2);
+
+    uint64_t existing_way = 0;
+    if (find_block_in_set(L2, l2_set, l2_tag, existing_way)) {
+        return;
+    }
+
+    bool need_evict = false;
+    uint64_t fill_way = select_fill_way(L2, l2_set, need_evict);
+
+    if (need_evict) {
+        handle_l2_eviction(l2_set, fill_way, p_stats);
+    }
+
+    fill_block(L2, l2_set, fill_way, l2_tag, false, true, false);
+    p_stats->prefetched_blocks++;
+}
+
+static void run_prefetch_on_l2_miss(uint64_t address, cache_stats_t* p_stats) {
+    uint64_t current_block_addr_u = get_block_addr(address, L2);
+    int64_t current_block_addr = static_cast<int64_t>(current_block_addr_u);
+
+    bool had_prev_miss = has_last_miss_block;
+    int64_t d = 0;
+
+    if (had_prev_miss) {
+        d = current_block_addr - static_cast<int64_t>(last_miss_block_addr);
+    }
+
+    last_miss_block_addr = current_block_addr_u;
+    has_last_miss_block = true;
+
+    if (had_prev_miss && d == pending_stride) {
+        for (uint32_t i = 1; i <= prefetch_k; i++) {
+            int64_t target_block_addr = current_block_addr + static_cast<int64_t>(i) * pending_stride;
+
+            if (block_addr_out_of_range(target_block_addr)) {
+                continue;
+            }
+
+            uint64_t target_address = static_cast<uint64_t>(target_block_addr) << L2.B;
+            prefetch_block_to_L2(target_address, p_stats);
+        }
+    }
+
+    pending_stride = d;
+}
+
 /**
  * Subroutine for initializing the cache. You many add and initialize any global or heap
  * variables as needed.
@@ -178,6 +240,10 @@ static void handle_l2_eviction(uint64_t set_idx, uint64_t way_idx, cache_stats_t
 void setup_cache(uint64_t c1, uint64_t b1, uint64_t s1, uint64_t c2, uint64_t b2, uint64_t s2, uint32_t k) {
     global_time = 0;
     prefetch_k = k;
+
+    has_last_miss_block = false;
+    last_miss_block_addr = 0;
+    pending_stride = 0;
 
     init_cache(L1, c1, b1, s1);
     init_cache(L2, c2, b2, s2);
@@ -230,6 +296,11 @@ void cache_access(char rw, uint64_t address, cache_stats_t* p_stats) {
 
     uint64_t l2_way = 0;
     if (find_block_in_set(L2, l2_set, l2_tag, l2_way)) { // L2 Hit
+        if (L2.sets[l2_set].blocks[l2_way].prefetched) {
+            p_stats->successful_prefetches++;
+            L2.sets[l2_set].blocks[l2_way].prefetched = false;
+        }
+        
         touch_block(L2, l2_set, l2_way);
 
         bool l1_need_evict = false;
@@ -270,6 +341,8 @@ void cache_access(char rw, uint64_t address, cache_stats_t* p_stats) {
     }
 
     fill_block(L1, l1_set, fill_l1_way, l1_tag, (rw == WRITE), false, true);
+
+    run_prefetch_on_l2_miss(address, p_stats);
 }
 
 /**
