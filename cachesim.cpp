@@ -1,4 +1,49 @@
 #include "cachesim.hpp"
+#include <vector>
+
+struct Block {
+    uint64_t tag = 0;
+    int64_t last_used = 0;
+    bool valid = false;
+    bool dirty = false;
+    bool prefetched = false;
+};
+
+struct Set {
+    std::vector<Block> blocks;
+};
+
+struct Cache {
+    uint64_t C = 0;
+    uint64_t B = 0;
+    uint64_t S = 0;
+    uint64_t block_size = 0;   // 2^B
+    uint64_t ways = 0;         // 2^S
+    uint64_t num_sets = 0;     // 2^(C-B-S)
+    std::vector<Set> sets;
+};
+
+static Cache L1;
+static Cache L2;
+static uint64_t global_time = 0;
+static uint32_t prefetch_k = 0;
+
+void init_cache(Cache& cache, uint64_t C, uint64_t B, uint64_t S) {
+    cache.C = C;
+    cache.B = B;
+    cache.S = S;
+
+    cache.block_size = 1 << B;
+    cache.ways = 1 << S;
+    cache.num_sets = 1 << (C - B - S);
+
+    cache.sets.clear();
+    cache.sets.resize(cache.num_sets);
+
+    for (uint64_t i = 0; i < cache.num_sets; i++) {
+        cache.sets[i].blocks.resize(cache.ways);
+    }
+}
 
 /**
  * Subroutine for initializing the cache. You many add and initialize any global or heap
@@ -13,6 +58,11 @@
  * @k Prefetch K subsequent blocks
  */
 void setup_cache(uint64_t c1, uint64_t b1, uint64_t s1, uint64_t c2, uint64_t b2, uint64_t s2, uint32_t k) {
+    global_time = 0;
+    prefetch_k = k;
+
+    init_cache(L1, c1, b1, s1);
+    init_cache(L2, c2, b2, s2);
 }
 
 /**
@@ -23,6 +73,7 @@ void setup_cache(uint64_t c1, uint64_t b1, uint64_t s1, uint64_t c2, uint64_t b2
  * @p_stats Pointer to the statistics structure
  */
 void cache_access(char rw, uint64_t address, cache_stats_t* p_stats) {
+    
 }
 
 /**
