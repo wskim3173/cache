@@ -28,14 +28,14 @@ static Cache L2;
 static uint64_t global_time = 0;
 static uint32_t prefetch_k = 0;
 
-void init_cache(Cache& cache, uint64_t C, uint64_t B, uint64_t S) {
+static void init_cache(Cache& cache, uint64_t C, uint64_t B, uint64_t S) {
     cache.C = C;
     cache.B = B;
     cache.S = S;
 
-    cache.block_size = 1 << B;
-    cache.ways = 1 << S;
-    cache.num_sets = 1 << (C - B - S);
+    cache.block_size = 1ULL << B;
+    cache.ways = 1ULL << S;
+    cache.num_sets = 1ULL << (C - B - S);
 
     cache.sets.clear();
     cache.sets.resize(cache.num_sets);
@@ -43,6 +43,20 @@ void init_cache(Cache& cache, uint64_t C, uint64_t B, uint64_t S) {
     for (uint64_t i = 0; i < cache.num_sets; i++) {
         cache.sets[i].blocks.resize(cache.ways);
     }
+}
+
+static uint64_t get_set_index(uint64_t address, const Cache& cache) {
+    if (cache.num_sets == 1) {
+        return 0;
+    }
+    uint64_t index_bits = cache.C - cache.B - cache.S;
+    uint64_t mask = (1ULL << index_bits) - 1;
+    return (address >> cache.B) & mask;
+}
+
+static uint64_t get_tag(uint64_t address, const Cache& cache) {
+    uint64_t index_bits = cache.C - cache.B - cache.S;
+    return address >> (cache.B + index_bits);
 }
 
 /**
