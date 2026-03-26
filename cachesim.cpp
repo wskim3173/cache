@@ -300,7 +300,7 @@ void cache_access(char rw, uint64_t address, cache_stats_t* p_stats) {
             p_stats->successful_prefetches++;
             L2.sets[l2_set].blocks[l2_way].prefetched = false;
         }
-        
+
         touch_block(L2, l2_set, l2_way);
 
         bool l1_need_evict = false;
@@ -352,4 +352,26 @@ void cache_access(char rw, uint64_t address, cache_stats_t* p_stats) {
  * @p_stats Pointer to the statistics structure
  */
 void complete_cache(cache_stats_t *p_stats) {
+    uint64_t l1_misses = p_stats->L1_read_misses + p_stats->L1_write_misses;
+    uint64_t l2_misses = p_stats->L2_read_misses + p_stats->L2_write_misses;
+
+    double mr1 = 0.0;
+    double mr2 = 0.0;
+
+    if (p_stats->L1_accesses > 0) {
+        mr1 = static_cast<double>(l1_misses) /
+              static_cast<double>(p_stats->L1_accesses);
+    }
+
+    if (p_stats->L2_accesses > 0) {
+        mr2 = static_cast<double>(l2_misses) /
+              static_cast<double>(p_stats->L2_accesses);
+    }
+
+    double ht1 = 2.0 + 0.2 * static_cast<double>(L1.S);
+    double ht2 = 4.0 + 0.4 * static_cast<double>(L2.S);
+    double mp2 = 500.0;
+    double mp1 = ht2 + mr2 * mp2;
+
+    p_stats->avg_access_time = ht1 + mr1 * mp1;
 }
