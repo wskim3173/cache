@@ -1,7 +1,6 @@
 #include "cachesim.hpp"
 #include <vector>
 #include <cstdint>
-#include <climits>
 
 struct Block {
     uint64_t tag = 0;
